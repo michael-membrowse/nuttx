@@ -19,12 +19,24 @@ jobs:
       - name: Checkout repository
         uses: actions/checkout@v5
 
+      - uses: actions/setup-python@v6
+        with:
+          python-version: '3.11'
+
+      - name: Install membrowse
+        run: pip install --no-cache-dir membrowse
+
       - name: Post combined PR comment
         if: ${{ env.MEMBROWSE_API_KEY != '' }}
-        uses: membrowse/membrowse-action/comment-action@v1
-        with:
-          api_key: ${{ secrets.MEMBROWSE_API_KEY }}
-          commit: ${{ github.event.workflow_run.head_sha }}
         env:
           MEMBROWSE_API_KEY: ${{ secrets.MEMBROWSE_API_KEY }}
+          MEMBROWSE_API_URL: ${{ vars.MEMBROWSE_API_URL }}
           GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+          HEAD_SHA: ${{ github.event.workflow_run.head_sha }}
+        run: |
+          SUMMARY_ARGS=("$HEAD_SHA" --api-key "$MEMBROWSE_API_KEY" --json)
+          if [ -n "$MEMBROWSE_API_URL" ]; then
+            SUMMARY_ARGS+=(--api-url "$MEMBROWSE_API_URL")
+          fi
+          membrowse summary "${SUMMARY_ARGS[@]}" > /tmp/membrowse-summary.json
+          python -m membrowse.utils.github_comment --summary-json /tmp/membrowse-summary.json

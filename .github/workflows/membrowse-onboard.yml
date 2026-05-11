@@ -43,28 +43,56 @@ jobs:
           git config --global --add safe.directory '*'
           git clone --depth=1 https://github.com/apache/nuttx-apps.git ../apps
 
-      - name: Run MemBrowse Onboard Action
-        uses: membrowse/membrowse-action/onboard-action@v1
-        with:
-          target_name: ${{ matrix.target_name }}
-          num_commits: ${{ github.event.inputs.num_commits }}
-          build_script: |
-            ./tools/configure.sh -l ${{ matrix.board_config }}
-            echo CONFIG_DEBUG_SYMBOLS=y >> .config
-            echo CONFIG_DEBUG_LINK_MAP=y >> .config
-            if [ -n "${{ matrix.config_overrides }}" ]; then
-              kconfig-tweak ${{ matrix.config_overrides }}
-            fi
-            make olddefconfig
-            # Preserve preprocessed linker scripts (.ld.tmp). The patch dirties
-            # tracked files; revert on exit so onboard's next git checkout works.
-            find arch -name Makefile -exec sed -i '/DELFILE, $(addsuffix .tmp,$(ARCHSCRIPT))/d' {} +
-            trap 'git checkout -- arch/' EXIT
-            make -j$(nproc)
-          elf: ${{ matrix.elf }}
-          ld: ${{ matrix.ld }}
-          map_file: ${{ matrix.map_file }}
-          linker_vars: ${{ matrix.linker_vars }}
-          binary_search: 'true'
-          api_key: ${{ secrets.MEMBROWSE_API_KEY }}
-          api_url: ${{ vars.MEMBROWSE_API_URL }}
+      - name: Install membrowse
+        run: python3 -m pip install --no-cache-dir membrowse
+
+      - name: Fetch full git history
+        run: |
+          git fetch --unshallow || true
+          git fetch --all
+
+      - name: Run MemBrowse Onboard
+        env:
+          MEMBROWSE_API_KEY: ${{ secrets.MEMBROWSE_API_KEY }}
+          MEMBROWSE_API_URL: ${{ vars.MEMBROWSE_API_URL }}
+          NUM_COMMITS: ${{ github.event.inputs.num_commits }}
+          TARGET_NAME: ${{ matrix.target_name }}
+          ELF: ${{ matrix.elf }}
+          LD: ${{ matrix.ld }}
+          MAP_FILE: ${{ matrix.map_file }}
+          LINKER_VARS: ${{ matrix.linker_vars }}
+        run: |
+          BUILD_SCRIPT=$(cat <<'BUILD_EOF'
+          ./tools/configure.sh -l ${{ matrix.board_config }}
+          echo CONFIG_DEBUG_SYMBOLS=y >> .config
+          echo CONFIG_DEBUG_LINK_MAP=y >> .config
+          if [ -n "${{ matrix.config_overrides }}" ]; then
+            kconfig-tweak ${{ matrix.config_overrides }}
+          fi
+          make olddefconfig
+          find arch -name Makefile -exec sed -i '/DELFILE, $(addsuffix .tmp,$(ARCHSCRIPT))/d' {} +
+          trap 'git checkout -- arch/' EXIT
+          make -j$(nproc)
+          BUILD_EOF
+          )
+
+          ARGS=("$NUM_COMMITS" "$BUILD_SCRIPT" "$ELF" "$TARGET_NAME" "$MEMBROWSE_API_KEY")
+          if [ -n "$MEMBROWSE_API_URL" ]; then
+            ARGS+=(--api-url "$MEMBROWSE_API_URL")
+          fi
+          if [ -n "$LD" ]; then
+            ARGS+=(--ld-scripts "$LD")
+          fi
+          if [ -n "$LINKER_VARS" ]; then
+            set -f
+            for var in $LINKER_VARS; do
+              ARGS+=(--def "$var")
+            done
+            set +f
+          fi
+          if [ -n "$MAP_FILE" ]; then
+            ARGS+=(--map-file "$MAP_FILE")
+          fi
+          ARGS+=(--binary-search)
+
+          membrowse onboard "${ARGS[@]}"
